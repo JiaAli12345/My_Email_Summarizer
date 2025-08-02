@@ -1,0 +1,385 @@
+# Creating an email summarization / task list generating tool using Ollama
+import os.path
+from # MySmartMail: AI Email Summarizer & Task Assistant
+import os.path
+from ollama import Client
+import base64
+from bs4 import BeautifulSoup
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+MODEL = "llama3"
+CONTEXT_SIZE = 8192
+OUTPUT_LENGTH = 1000
+TEMPERATURE = 0.1# MySmartMail: AI Email Summarizer & Task Assistant
+import os.path
+from ollama import Client
+import base64
+from bs4 import BeautifulSoup
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+MODEL = "llama3"
+CONTEXT_SIZE = 8192
+OUTPUT_LENGTH = 1000
+TEMPERATURE = 0.1
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+import time
+
+def extract_email_parts(parts):
+    body_message = ""
+    body_html = ""
+    for part in parts:
+        body = part.get("body")
+        data = body.get("data")
+        mimeType = part.get("mimeType")
+        if mimeType == 'multipart/alternative':
+            subparts = part.get('parts')
+            [new_message, new_html] = extract_email_parts(subparts)
+            body_message += new_message
+            body_html += new_html
+        elif mimeType == 'text/plain':               
+            new_message = base64.urlsafe_b64decode(data)
+            body_message += str(new_message, 'utf-8')
+        elif mimeType == 'text/html':
+            new_html = base64.urlsafe_b64decode(data)
+            body_html += str(new_html, 'utf-8')
+    return [body_message, body_html]
+
+def fetch_gmail_emails():
+    emails_output = []
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", GMAIL_SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", GMAIL_SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        messages = service.users().messages().list(userId="me", q="newer_than:1d category:primary").execute()
+        i = 0
+        print("Collecting Gmails...")
+        for message in messages["messages"]:
+            i += 1
+            msg = service.users().messages().get(userId="me", id=message["id"]).execute()
+            subject = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "Subject"]
+            from_email = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "From"]
+            [body_message, body_html] = extract_email_parts([msg["payload"]])
+            content = body_message if body_message else BeautifulSoup(body_html, "html.parser").text
+            emails_output.append([subject, from_email, content])
+            print("Email #" + str(i) + " collected")
+        return emails_output
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+
+def summarize_emails(emails_output, client):
+    i = 0
+    for email in emails_output:
+        if not email[2]:
+            continue
+        i += 1
+        print(f"summarization {i} of {len(emails_output)}")
+        try:
+            print(f"{MODEL} Input Length: {len(email[2].split(' '))}")
+            summary = client.chat(model=MODEL, stream=False, options={
+                "num_predict": ((CONTEXT_SIZE - OUTPUT_LENGTH) // len(emails_output)),
+                "temperature": TEMPERATURE,
+                "num_ctx": CONTEXT_SIZE
+            }, messages=[
+                {
+                    'role': 'system',
+                    'content': 'You are an AI assistant. Summarize the following email, list action items for IMPORTANT emails, and categorize as IMPORTANT or UNIMPORTANT.',
+                },
+                {
+                    'role': 'user',
+                    'content': email[2],
+                }])
+            email[2] = summary['message']['content']
+        except:
+            print("Model Timeout: Not able to summarize the following email: " + str(email[0]))
+
+def generate_daily_digest(emails_output, client):
+    summary = client.generate(model=MODEL, stream=False, options={
+        "temperature": TEMPERATURE,
+        "num_predict": OUTPUT_LENGTH,
+        "num_ctx": CONTEXT_SIZE
+    }, system="You are an AI assistant. Create a to-do list from IMPORTANT email summaries and a short daily highlight.", prompt=str(emails_output))
+    return summary
+
+if __name__ == "__main__":
+    client = Client(host='http://localhost:11434', timeout=240)
+    try:
+        client.chat(model=MODEL)
+    except:
+        print("Model not found, pulling model...")
+        downloadStatus = client.pull(model=MODEL)
+        for chunk in downloadStatus["status"]:
+            print(chunk)
+
+    emails = fetch_gmail_emails()
+    print("\n All emails collected. Summarizing... \n")
+    summarize_emails(emails, client)
+    print("Approx Total # of Summary Tokens " + str(len(str(emails)) // 4) + ". (A number over 7000 may result in an incomplete summary.) \n")
+    print("Summarizing all emails into a daily digest... \n")
+    daily_summary = generate_daily_digest(emails, client)["response"]
+    print(daily_summary)
+    with open("daily_summary.txt", "w") as file:
+        file.write(daily_summary)
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+import time
+
+def extract_email_parts(parts):
+    body_message = ""
+    body_html = ""
+    for part in parts:
+        body = part.get("body")
+        data = body.get("data")
+        mimeType = part.get("mimeType")
+        if mimeType == 'multipart/alternative':
+            subparts = part.get('parts')
+            [new_message, new_html] = extract_email_parts(subparts)
+            body_message += new_message
+            body_html += new_html
+        elif mimeType == 'text/plain':               
+            new_message = base64.urlsafe_b64decode(data)
+            body_message += str(new_message, 'utf-8')
+        elif mimeType == 'text/html':
+            new_html = base64.urlsafe_b64decode(data)
+            body_html += str(new_html, 'utf-8')
+    return [body_message, body_html]
+
+def fetch_gmail_emails():
+    emails_output = []
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", GMAIL_SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", GMAIL_SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        messages = service.users().messages().list(userId="me", q="newer_than:1d category:primary").execute()
+        i = 0
+        print("Collecting Gmails...")
+        for message in messages["messages"]:
+            i += 1
+            msg = service.users().messages().get(userId="me", id=message["id"]).execute()
+            subject = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "Subject"]
+            from_email = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "From"]
+            [body_message, body_html] = extract_email_parts([msg["payload"]])
+            content = body_message if body_message else BeautifulSoup(body_html, "html.parser").text
+            emails_output.append([subject, from_email, content])
+            print("Email #" + str(i) + " collected")
+        return emails_output
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+
+def summarize_emails(emails_output, client):
+    i = 0
+    for email in emails_output:
+        if not email[2]:
+            continue
+        i += 1
+        print(f"summarization {i} of {len(emails_output)}")
+        try:
+            print(f"{MODEL} Input Length: {len(email[2].split(' '))}")
+            summary = client.chat(model=MODEL, stream=False, options={
+                "num_predict": ((CONTEXT_SIZE - OUTPUT_LENGTH) // len(emails_output)),
+                "temperature": TEMPERATURE,
+                "num_ctx": CONTEXT_SIZE
+            }, messages=[
+                {
+                    'role': 'system',
+                    'content': 'You are an AI assistant. Summarize the following email, list action items for IMPORTANT emails, and categorize as IMPORTANT or UNIMPORTANT.',
+                },
+                {
+                    'role': 'user',
+                    'content': email[2],
+                }])
+            email[2] = summary['message']['content']
+        except:
+            print("Model Timeout: Not able to summarize the following email: " + str(email[0]))
+
+def generate_daily_digest(emails_output, client):
+    summary = client.generate(model=MODEL, stream=False, options={
+        "temperature": TEMPERATURE,
+        "num_predict": OUTPUT_LENGTH,
+        "num_ctx": CONTEXT_SIZE
+    }, system="You are an AI assistant. Create a to-do list from IMPORTANT email summaries and a short daily highlight.", prompt=str(emails_output))
+    return summary
+
+if __name__ == "__main__":
+    client = Client(host='http://localhost:11434', timeout=240)
+    try:
+        client.chat(model=MODEL)
+    except:
+        print("Model not found, pulling model...")
+        downloadStatus = client.pull(model=MODEL)
+        for chunk in downloadStatus["status"]:
+            print(chunk)
+
+    emails = fetch_gmail_emails()
+    print("\n All emails collected. Summarizing... \n")
+    summarize_emails(emails, client)
+    print("Approx Total # of Summary Tokens " + str(len(str(emails)) // 4) + ". (A number over 7000 may result in an incomplete summary.) \n")
+    print("Summarizing all emails into a daily digest... \n")
+    daily_summary = generate_daily_digest(emails, client)["response"]
+    print(daily_summary)
+    with open("daily_summary.txt", "w") as file:
+        file.write(daily_summary) import Client
+import base64
+from bs4 import BeautifulSoup
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+MODEL = "llama3"
+
+CONTEXT_SIZE = 8192
+
+OUTPUT_LENGTH = 1000
+
+TEMPERATURE = 0.1
+
+# If modifying these scopes, delete the file token.json.
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+import time
+
+def processParts(parts):
+    body_message = ""
+    body_html = ""
+    for part in parts:
+        body = part.get("body")
+        data = body.get("data")
+        mimeType = part.get("mimeType")
+        if mimeType == 'multipart/alternative':
+            subparts = part.get('parts')
+            [new_message, new_html] = processParts(subparts)
+            body_message += new_message
+            body_html += new_html
+        elif mimeType == 'text/plain':               
+            new_message = base64.urlsafe_b64decode(data)
+            body_message += str(new_message, 'utf-8')
+        elif mimeType == 'text/html':
+            new_html = base64.urlsafe_b64decode(data)
+            body_html += str(new_html, 'utf-8')
+    return [body_message, body_html]
+
+def createGmailRequest():
+    """Shows basic usage of the Gmail API.
+    Lists the user's Gmail labels.
+    """
+    emails_output = []
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", GMAIL_SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", GMAIL_SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    try:
+        # Call the Gmail API
+        service = build("gmail", "v1", credentials=creds)
+        messages = service.users().messages().list(userId="me", q="newer_than:1d category:primary").execute()
+        i = 0
+        print("Collecting Gmails...")
+        for message in messages["messages"]:
+            i += 1
+            msg = service.users().messages().get(userId="me", id=message["id"]).execute()
+            subject = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "Subject"]
+            from_email = [header["value"] for header in msg["payload"]["headers"] if header["name"] == "From"]
+            [body_message, body_html] = processParts([msg["payload"]])
+            if (body_message and body_message != ""):
+                content = body_message
+            else:
+                content = BeautifulSoup(body_html, "html.parser").text
+            emails_output.append([subject, from_email, content])
+            print("Email #" + str(i) + " collected")
+        return emails_output
+        
+
+    except HttpError as error:
+        # TODO(developer) - Handle errors from gmail API.
+        print(f"An error occurred: {error}")
+
+
+def summarizeEmails(emails_output, client):
+    i = 0
+    for email in emails_output:
+        if not email[2] or email[2] == "":
+            continue
+        i+=1
+        print("summarization " + str(i) + " of " + str(len(emails_output)))
+        # add a timeout such that if the response takes too long, we try generating the response again
+
+        try:
+            print(MODEL + "Input Length:" + str(len(email[2].split(" "))))
+            summary = client.chat(model=MODEL, stream=False, options={"num_predict": ((CONTEXT_SIZE - OUTPUT_LENGTH) // len(emails_output)), "temperature": TEMPERATURE, "num_ctx": CONTEXT_SIZE}, messages=[
+                {
+                    'role': 'system',
+                    'content': 'You are a powerful email-handling personal assistant that is excellent at saving me (your boss) time. Your task is to summarize the following email into a single header, with any action items listed as bullet points (action items only for IMPORTANT emails). Also, categorize the email into one of two categories IMPORTANT (/personal/work/admin) and UNIMPORTANT (marketing/spam/other). Also, if the email seems to be a template, I only care about the content that is unique to this email, not that it is a template.',
+                },
+                {
+                    'role': 'user',
+                    'content': email[2],
+                }])
+            email[2] = summary['message']['content']
+        except:
+            print("Model Timeout: Not able to summarize the following email: " + email[0])
+        
+
+def createDailySummary(emails_output, client):
+    summary = client.generate(model=MODEL, stream=False, options={"temperature": TEMPERATURE, "num_predict": OUTPUT_LENGTH, "num_ctx": CONTEXT_SIZE}, system="You are a powerful email-handling personal assistant that is excellent at saving your boss time. Create a to-do list from the following email summaries which are classified as IMPORTANT. Then, provide a short written summary of highlights from all of the emails (they are from the past 24hrs)", prompt=str(emails_output))
+    return summary
+
+if __name__ == "__main__":
+    client = Client(host='http://localhost:11434', timeout=240)
+    try:
+        client.chat(model=MODEL)
+    except:
+        print("Model not found, pulling model...")
+        downloadStatus = client.pull(model=MODEL)
+        # print downloadStatus["status"], which is a stream of the download status
+        for chunk in downloadStatus["status"]:
+            print(chunk)
+        
+
+    emails = createGmailRequest()
+    print("\n All emails collected. Summarizing... \n")
+    summarizeEmails(emails, client)
+    print("Approx Total # of Summary Tokens" + str(len(str(emails)) // 4) + ". (A number over 7000 may result in an incomplete summary.) \n")
+    print("Summarizing all emails into a daily summary... \n")
+    daily_summary = createDailySummary(emails, client)["response"]
+    print(daily_summary)
+    with open("daily_summary.txt", "w") as file:
+        file.write(daily_summary)
